@@ -7,36 +7,61 @@ namespace Worker;
 public class JobStarterWorker : BackgroundService
 {
     private readonly ILogger<JobStarterWorker> _logger;
-    private readonly QueueClient _queue;
+    private readonly QueueClient _startQueue;
+    private readonly QueueClient _taskQueue;
+    private readonly HttpClient _http = new();
 
     public JobStarterWorker(ILogger<JobStarterWorker> logger)
     {
         _logger = logger;
-        _queue = new QueueClient(
-            "UseDevelopmentStorage=true",
-            QueueNames.JobStart,
-            new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 });
+        var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+        _startQueue = new QueueClient("UseDevelopmentStorage=true", QueueNames.JobStart, options);
+        _taskQueue = new QueueClient("UseDevelopmentStorage=true", QueueNames.ImageTasks, options);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        await _queue.CreateIfNotExistsAsync(cancellationToken: stoppingToken);
+        await _startQueue.CreateIfNotExistsAsync(cancellationToken: ct);
+        await _taskQueue.CreateIfNotExistsAsync(cancellationToken: ct);
 
-        while (!stoppingToken.IsCancellationRequested)
+        while (!ct.IsCancellationRequested)
         {
-            var response = await _queue.ReceiveMessageAsync(cancellationToken: stoppingToken);
-            var message = response.Value;
+            var message = (await _startQueue.ReceiveMessageAsync(cancellationToken: ct)).Value;
 
             if (message is null)
             {
-                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 continue;
             }
 
-            var job = JsonSerializer.Deserialize<StartJobMessage>(message.MessageText);
-            _logger.LogInformation("Got job {JobId}", job!.JobId);
+            try
+            {
+                var job = JsonSerializer.Deserialize<StartJobMessage>(message.MessageText)!;
+                await FanOutAsync(job.JobId, ct);
+                await _startQueue.DeleteMessageAsync(message.MessageId, message.PopReceipt, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process start message {MessageId}", message.MessageId);
+            }
+        }
+    }
 
-            await _queue.DeleteMessageAsync(message.MessageId, message.PopReceipt, stoppingToken);
+    private async Task FanOutAsync(Guid jobId, CancellationToken ct)
+    {
+        var json = await _http.GetStringAsync("https://data.buienradar.nl/2.0/feed/json", ct);
+        var feed = JsonSerializer.Deserialize<BuienradarFeed>(json)!;
+        var stations = feed.Actual.StationMeasurements;
+
+        _logger.LogInformation("Job {JobId}: fanning out {Count} stations", jobId, stations.Count);
+
+        foreach (var station in stations)
+        {
+            var name = station.StationName.Replace("Meetstation ", "");
+            var task = new ImageTaskMessage(
+                jobId, station.StationId, name, station.Temperature, station.WeatherDescription);
+
+            await _taskQueue.SendMessageAsync(JsonSerializer.Serialize(task), ct);
         }
     }
 }
