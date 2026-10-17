@@ -9,14 +9,17 @@ public class JobStarterWorker : BackgroundService
     private readonly ILogger<JobStarterWorker> _logger;
     private readonly QueueClient _startQueue;
     private readonly QueueClient _taskQueue;
-    private readonly HttpClient _http = new();
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
-    public JobStarterWorker(ILogger<JobStarterWorker> logger)
+    public JobStarterWorker(ILogger<JobStarterWorker> logger, IConfiguration config)
     {
         _logger = logger;
+
+        var storage = config.GetConnectionString("Storage") ?? "UseDevelopmentStorage=true";
         var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
-        _startQueue = new QueueClient("UseDevelopmentStorage=true", QueueNames.JobStart, options);
-        _taskQueue = new QueueClient("UseDevelopmentStorage=true", QueueNames.ImageTasks, options);
+
+        _startQueue = new QueueClient(storage, QueueNames.JobStart, options);
+        _taskQueue = new QueueClient(storage, QueueNames.ImageTasks, options);
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)

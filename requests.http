@@ -1,4 +1,21 @@
-@host = http://localhost:5271
+# Weather Images API
+#
+# POST /images starts a job and returns an id immediately.
+# The work happens in the background: ~40 weather stations,
+# one image each, so allow 30-60 seconds before fetching.
+#
+# GET /images/{id} returns the generated image URLs.
+@local = http://localhost:5271
+@azure = https://weatherimg-api.agreeablepond-18b8b7df.swedencentral.azurecontainerapps.io
 
-### Start a job
+@host = {{azure}}
+
+### Health check
+GET {{host}}/health
+
+### Start a job — returns a job id
 POST {{host}}/images
+
+### Fetch results for a job
+@jobId = 0402c898-6bd5-4abc-82a7-3398b022c264
+GET {{host}}/images/{{jobId}}
